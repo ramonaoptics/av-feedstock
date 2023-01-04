@@ -1,0 +1,27 @@
+From 7f7906f4842b081b16e9884957fc88657576ba8a Mon Sep 17 00:00:00 2001
+From: Mark Harfouche <mark.harfouche@gmail.com>
+Date: Tue, 3 Jan 2023 09:08:48 +0530
+Subject: [PATCH] BUGFIX: fix segfault on accessing stream type prior to any
+ encoding
+
+---
+ av/stream.pyx | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/av/stream.pyx b/av/stream.pyx
+index 971eaded..8badec74 100644
+--- a/av/stream.pyx
++++ b/av/stream.pyx
+@@ -319,4 +319,11 @@ cdef class Stream(object):
+ 
+         :type: str
+         """
+-        return lib.av_get_media_type_string(self.ptr.codecpar.codec_type)
++        cdef const char *s
++        s = lib.av_get_media_type_string(self.ptr.codecpar.codec_type)
++        # NULL if media_type is unknown (AVMEDIA_TYPE_UNKNOWN)
++        # Without this manual check, a segfault can occur
++        if s == NULL:
++            return None
++        else:
++            return s

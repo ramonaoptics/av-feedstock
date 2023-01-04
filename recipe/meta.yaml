@@ -2,7 +2,8 @@
 
 package:
   name: av
-  version: {{ version }}
+  # Set post version to indicate our modifications on conda-forge
+  version: {{ version }}.post1
 
 source:
   url: https://pypi.io/packages/source/a/av/av-{{ version }}.tar.gz
@@ -15,9 +16,11 @@ source:
     - patches/1067-add-flag-encoder-flush.patch
     # https://github.com/PyAV-Org/PyAV/pull/1110
     - patches/1110-ffmpeg6.patch  # [ffmpeg==6]
+    - patches/1061-AVVideoFrame-from_numpy_buffer.patch
+    # - patches/1068-fix-segfault-on-accessing-stream.patch
 
 build:
-  number: 3
+  number: 4
   script:
     - {{ PYTHON }} -m pip install . --no-deps --ignore-installed --no-cache-dir -vvv
     # 2022/02/06: hmaarrfk
