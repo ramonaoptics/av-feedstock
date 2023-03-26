@@ -17,10 +17,11 @@ source:
     # https://github.com/PyAV-Org/PyAV/pull/1110
     - patches/1110-ffmpeg6.patch  # [ffmpeg==6]
     - patches/1061-AVVideoFrame-from_numpy_buffer.patch
-    # - patches/1068-fix-segfault-on-accessing-stream.patch
+    - patches/1068-fix-segfault-on-accessing-stream.patch
+    - patches/version.patch
 
 build:
-  number: 0
+  number: 1
   script:
     - {{ PYTHON }} -m pip install . --no-deps --ignore-installed --no-cache-dir -vvv
     # 2022/02/06: hmaarrfk
