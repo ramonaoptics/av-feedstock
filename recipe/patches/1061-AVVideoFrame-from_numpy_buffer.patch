@@ -1,4 +1,4 @@
-From 24aae1e476793deaaa533011edc46fc2cdc8c1bc Mon Sep 17 00:00:00 2001
+From 221136839656fc08e695d5978771ef6fc8377ad6 Mon Sep 17 00:00:00 2001
 From: Mark Harfouche <mark.harfouche@gmail.com>
 Date: Sat, 24 Dec 2022 14:07:27 -0500
 Subject: [PATCH 1/2] Micro optimization. Check for None instead of truthyness
@@ -21,17 +21,17 @@ index 5c831461..6a9d5dbb 100644
              else:
                  break
 
-From 8daefbd9164f86de2c4062efee31c5726af06b05 Mon Sep 17 00:00:00 2001
+From 615bfa5fcd600e5bda1b0e6511430561055f28ee Mon Sep 17 00:00:00 2001
 From: Mark Harfouche <mark.harfouche@gmail.com>
 Date: Sat, 24 Dec 2022 17:17:41 -0500
 Subject: [PATCH 2/2] Provide a path to sharing memory with a numpy buffer
 
 ---
  av/video/frame.pxd           |  1 +
- av/video/frame.pyx           | 74 +++++++++++++++++++++++++++++++++++-
+ av/video/frame.pyx           | 77 +++++++++++++++++++++++++++++++++++-
  include/libavutil/avutil.pxd | 12 ++++++
- tests/test_videoframe.py     | 24 ++++++++++++
- 4 files changed, 110 insertions(+), 1 deletion(-)
+ tests/test_videoframe.py     | 62 +++++++++++++++++++++++++++++
+ 4 files changed, 151 insertions(+), 1 deletion(-)
 
 diff --git a/av/video/frame.pxd b/av/video/frame.pxd
 index a08da1ec..a5f2ba2c 100644
@@ -46,7 +46,7 @@ index a08da1ec..a5f2ba2c 100644
      cdef VideoReformatter reformatter
  
 diff --git a/av/video/frame.pyx b/av/video/frame.pyx
-index ac226fa0..55400b25 100644
+index ac226fa0..00d021a2 100644
 --- a/av/video/frame.pyx
 +++ b/av/video/frame.pyx
 @@ -118,6 +118,8 @@ cdef class VideoFrame(Frame):
@@ -66,7 +66,7 @@ index ac226fa0..55400b25 100644
          return tuple([VideoPlane(self, i) for i in range(plane_count)])
  
      property width:
-@@ -337,6 +338,77 @@ cdef class VideoFrame(Frame):
+@@ -337,6 +338,80 @@ cdef class VideoFrame(Frame):
  
          return frame
  
@@ -75,6 +75,9 @@ index ac226fa0..55400b25 100644
 +        if format in ["rgb24", "bgr24"]:
 +            check_ndarray(array, 'uint8', 3)
 +            check_ndarray_shape(array, array.shape[2] == 3)
++            height, width = array.shape[:2]
++        elif format in ('gray', 'gray8', 'rgb8', 'bgr8'):
++            check_ndarray(array, 'uint8', 2)
 +            height, width = array.shape[:2]
 +        else:
 +            raise ValueError('Conversion from numpy array with format `%s` is not yet supported' % format)
@@ -168,19 +171,57 @@ index 50e6bfff..277f1e43 100644
  
  cdef extern from "libavutil/log.h" nogil:
 diff --git a/tests/test_videoframe.py b/tests/test_videoframe.py
-index 3d354f0d..f8454dc5 100644
+index 3d354f0d..91e64e7f 100644
 --- a/tests/test_videoframe.py
 +++ b/tests/test_videoframe.py
-@@ -474,6 +474,30 @@ def test_ndarray_nv12_align(self):
-         self.assertEqual(frame.format.name, "nv12")
+@@ -475,6 +475,68 @@ def test_ndarray_nv12_align(self):
          self.assertNdarraysEqual(frame.to_ndarray(), array)
  
+ 
 +class TestVideoFrameNumpyBuffer(TestCase):
++    def test_shares_memory_gray(self):
++        array = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "gray")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_gray8(self):
++        array = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "gray8")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_rgb8(self):
++        array = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "rgb8")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_bgr8(self):
++        array = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "bgr8")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
 +    def test_shares_memory_rgb24(self):
 +        array = numpy.random.randint(0, 256, size=(357, 318, 3), dtype=numpy.uint8)
-+        original_arr = array.copy()
 +        frame = VideoFrame.from_numpy_buffer(array, "rgb24")
-+        numpy_from_frame = frame.to_ndarray()
 +        self.assertNdarraysEqual(frame.to_ndarray(), array)
 +
 +        # overwrite the array, the contents thereof
@@ -190,15 +231,15 @@ index 3d354f0d..f8454dc5 100644
 +
 +    def test_shares_memory_bgr24(self):
 +        array = numpy.random.randint(0, 256, size=(357, 318, 3), dtype=numpy.uint8)
-+        original_arr = array.copy()
 +        frame = VideoFrame.from_numpy_buffer(array, "bgr24")
-+        numpy_from_frame = frame.to_ndarray()
 +        self.assertNdarraysEqual(frame.to_ndarray(), array)
 +
 +        # overwrite the array, the contents thereof
 +        array[...] = numpy.random.randint(0, 256, size=(357, 318, 3), dtype=numpy.uint8)
 +        # Make sure the frame reflects that
 +        self.assertNdarraysEqual(frame.to_ndarray(), array)
- 
++
++
  class TestVideoFrameTiming(TestCase):
      def test_reformat_pts(self):
+         frame = VideoFrame(640, 480, "rgb24")

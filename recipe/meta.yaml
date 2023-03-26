@@ -3,7 +3,7 @@
 package:
   name: av
   # Set post version to indicate our modifications on conda-forge
-  version: {{ version }}.post1
+  version: {{ version }}.post2
 
 source:
   url: https://pypi.io/packages/source/a/av/av-{{ version }}.tar.gz
@@ -20,7 +20,7 @@ source:
     # - patches/1068-fix-segfault-on-accessing-stream.patch
 
 build:
-  number: 4
+  number: 0
   script:
     - {{ PYTHON }} -m pip install . --no-deps --ignore-installed --no-cache-dir -vvv
     # 2022/02/06: hmaarrfk
