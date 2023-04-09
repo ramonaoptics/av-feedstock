@@ -3,7 +3,7 @@
 package:
   name: av
   # Set post version to indicate our modifications on conda-forge
-  version: {{ version }}.post3
+  version: {{ version }}.post4
 
 source:
   url: https://pypi.io/packages/source/a/av/av-{{ version }}.tar.gz

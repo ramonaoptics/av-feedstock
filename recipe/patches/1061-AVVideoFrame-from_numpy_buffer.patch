@@ -21,17 +21,17 @@ index 5c831461..6a9d5dbb 100644
              else:
                  break
 
-From 13d5c9bf2b0d435b29ef417584c3e18779b1c141 Mon Sep 17 00:00:00 2001
+From 3fbb3925754b7dcf2baddb70ff7310d81d9588d0 Mon Sep 17 00:00:00 2001
 From: Mark Harfouche <mark.harfouche@gmail.com>
 Date: Sat, 24 Dec 2022 17:17:41 -0500
 Subject: [PATCH 2/2] Provide a path to sharing memory with a numpy buffer
 
 ---
  av/video/frame.pxd           |  1 +
- av/video/frame.pyx           | 83 +++++++++++++++++++++++++++++++++++-
- include/libavutil/avutil.pxd | 12 ++++++
- tests/test_videoframe.py     | 72 +++++++++++++++++++++++++++++++
- 4 files changed, 167 insertions(+), 1 deletion(-)
+ av/video/frame.pyx           | 83 +++++++++++++++++++++++++++++++-
+ include/libavutil/avutil.pxd | 12 +++++
+ tests/test_videoframe.py     | 92 ++++++++++++++++++++++++++++++++++++
+ 4 files changed, 187 insertions(+), 1 deletion(-)
 
 diff --git a/av/video/frame.pxd b/av/video/frame.pxd
 index a08da1ec..a5f2ba2c 100644
@@ -46,7 +46,7 @@ index a08da1ec..a5f2ba2c 100644
      cdef VideoReformatter reformatter
  
 diff --git a/av/video/frame.pyx b/av/video/frame.pyx
-index ac226fa0..1a57861e 100644
+index ac226fa0..e0a73541 100644
 --- a/av/video/frame.pyx
 +++ b/av/video/frame.pyx
 @@ -118,6 +118,8 @@ cdef class VideoFrame(Frame):
@@ -79,7 +79,7 @@ index ac226fa0..1a57861e 100644
 +        elif format in ('gray', 'gray8', 'rgb8', 'bgr8'):
 +            check_ndarray(array, 'uint8', 2)
 +            height, width = array.shape[:2]
-+        elif format == "nv12":
++        elif format in ["yuv420p", "yuvj420p", "nv12"]:
 +            check_ndarray(array, 'uint8', 2)
 +            check_ndarray_shape(array, array.shape[0] % 3 == 0)
 +            check_ndarray_shape(array, array.shape[1] % 2 == 0)
@@ -177,10 +177,10 @@ index 50e6bfff..277f1e43 100644
  
  cdef extern from "libavutil/log.h" nogil:
 diff --git a/tests/test_videoframe.py b/tests/test_videoframe.py
-index 3d354f0d..452b6a51 100644
+index 3d354f0d..c0193137 100644
 --- a/tests/test_videoframe.py
 +++ b/tests/test_videoframe.py
-@@ -475,6 +475,78 @@ def test_ndarray_nv12_align(self):
+@@ -475,6 +475,98 @@ def test_ndarray_nv12_align(self):
          self.assertNdarraysEqual(frame.to_ndarray(), array)
  
  
@@ -232,6 +232,26 @@ index 3d354f0d..452b6a51 100644
 +
 +        # overwrite the array, the contents thereof
 +        array[...] = numpy.random.randint(0, 256, size=(357, 318, 3), dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_yuv420p(self):
++        array = numpy.random.randint(0, 256, size=(512 * 6 // 4, 256), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "yuv420p")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=array.shape, dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_yuvj420p(self):
++        array = numpy.random.randint(0, 256, size=(512 * 6 // 4, 256), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "yuvj420p")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=array.shape, dtype=numpy.uint8)
 +        # Make sure the frame reflects that
 +        self.assertNdarraysEqual(frame.to_ndarray(), array)
 +
