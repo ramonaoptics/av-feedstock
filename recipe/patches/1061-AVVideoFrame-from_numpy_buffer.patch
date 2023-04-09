@@ -1,7 +1,7 @@
 From 221136839656fc08e695d5978771ef6fc8377ad6 Mon Sep 17 00:00:00 2001
 From: Mark Harfouche <mark.harfouche@gmail.com>
 Date: Sat, 24 Dec 2022 14:07:27 -0500
-Subject: [PATCH 1/2] Micro optimization. Check for None instead of truthyness
+Subject: [PATCH 1/3] Micro optimization. Check for None instead of truthyness
 
 ---
  av/codec/context.pyx | 2 +-
@@ -24,7 +24,7 @@ index 5c831461..6a9d5dbb 100644
 From 615bfa5fcd600e5bda1b0e6511430561055f28ee Mon Sep 17 00:00:00 2001
 From: Mark Harfouche <mark.harfouche@gmail.com>
 Date: Sat, 24 Dec 2022 17:17:41 -0500
-Subject: [PATCH 2/2] Provide a path to sharing memory with a numpy buffer
+Subject: [PATCH 2/3] Provide a path to sharing memory with a numpy buffer
 
 ---
  av/video/frame.pxd           |  1 +
@@ -243,3 +243,52 @@ index 3d354f0d..91e64e7f 100644
  class TestVideoFrameTiming(TestCase):
      def test_reformat_pts(self):
          frame = VideoFrame(640, 480, "rgb24")
+
+From 55642ff2479078e98bc26fc00dbd6a150c50e814 Mon Sep 17 00:00:00 2001
+From: Mark Harfouche <mark.harfouche@gmail.com>
+Date: Sat, 8 Apr 2023 22:28:26 -0400
+Subject: [PATCH 3/3] Add support for nv12
+
+---
+ av/video/frame.pyx       |  6 ++++++
+ tests/test_videoframe.py | 10 ++++++++++
+ 2 files changed, 16 insertions(+)
+
+diff --git a/av/video/frame.pyx b/av/video/frame.pyx
+index 00d021a2..1a57861e 100644
+--- a/av/video/frame.pyx
++++ b/av/video/frame.pyx
+@@ -347,6 +347,12 @@ cdef class VideoFrame(Frame):
+         elif format in ('gray', 'gray8', 'rgb8', 'bgr8'):
+             check_ndarray(array, 'uint8', 2)
+             height, width = array.shape[:2]
++        elif format == "nv12":
++            check_ndarray(array, 'uint8', 2)
++            check_ndarray_shape(array, array.shape[0] % 3 == 0)
++            check_ndarray_shape(array, array.shape[1] % 2 == 0)
++            height, width = array.shape[:2]
++            height = height // 6 * 4
+         else:
+             raise ValueError('Conversion from numpy array with format `%s` is not yet supported' % format)
+ 
+diff --git a/tests/test_videoframe.py b/tests/test_videoframe.py
+index 91e64e7f..452b6a51 100644
+--- a/tests/test_videoframe.py
++++ b/tests/test_videoframe.py
+@@ -526,6 +526,16 @@ def test_shares_memory_rgb24(self):
+         # Make sure the frame reflects that
+         self.assertNdarraysEqual(frame.to_ndarray(), array)
+ 
++    def test_shares_memory_nv12(self):
++        array = numpy.random.randint(0, 256, size=(512 * 6 // 4, 256), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "nv12")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=array.shape, dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
+     def test_shares_memory_bgr24(self):
+         array = numpy.random.randint(0, 256, size=(357, 318, 3), dtype=numpy.uint8)
+         frame = VideoFrame.from_numpy_buffer(array, "bgr24")
