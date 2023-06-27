@@ -9,9 +9,9 @@ cdt_arch:
 cdt_name:
 - cos7
 channel_sources:
-- conda-forge
+- ramonaoptics,conda-forge
 channel_targets:
-- conda-forge main
+- ramonaoptics main
 docker_image:
 - quay.io/condaforge/linux-anvil-aarch64
 ffmpeg:
