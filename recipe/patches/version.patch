@@ -4,4 +4,4 @@ index 9158871..bb011ea 100644
 +++ b/av/about.py
 @@ -1 +1 @@
 -__version__ = "10.0.0"
-+__version__ = "10.0.0.post5"
++__version__ = "10.0.0.post6"
