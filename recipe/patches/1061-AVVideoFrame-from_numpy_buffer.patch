@@ -1,7 +1,7 @@
 From 221136839656fc08e695d5978771ef6fc8377ad6 Mon Sep 17 00:00:00 2001
 From: Mark Harfouche <mark.harfouche@gmail.com>
 Date: Sat, 24 Dec 2022 14:07:27 -0500
-Subject: [PATCH 1/2] Micro optimization. Check for None instead of truthyness
+Subject: [PATCH 1/3] Micro optimization. Check for None instead of truthyness
 
 ---
  av/codec/context.pyx | 2 +-
@@ -24,7 +24,7 @@ index 5c831461..6a9d5dbb 100644
 From 3fbb3925754b7dcf2baddb70ff7310d81d9588d0 Mon Sep 17 00:00:00 2001
 From: Mark Harfouche <mark.harfouche@gmail.com>
 Date: Sat, 24 Dec 2022 17:17:41 -0500
-Subject: [PATCH 2/2] Provide a path to sharing memory with a numpy buffer
+Subject: [PATCH 2/3] Provide a path to sharing memory with a numpy buffer
 
 ---
  av/video/frame.pxd           |  1 +
@@ -279,3 +279,116 @@ index 3d354f0d..c0193137 100644
  class TestVideoFrameTiming(TestCase):
      def test_reformat_pts(self):
          frame = VideoFrame(640, 480, "rgb24")
+
+From 96451b7f5515de06a4b08b58f704c4ff043dfcdd Mon Sep 17 00:00:00 2001
+From: Mark Harfouche <mark.harfouche@gmail.com>
+Date: Sun, 23 Jul 2023 10:48:09 -0400
+Subject: [PATCH 3/3] Create a dedicate code path to convert YUV frames to
+ numpy for speed
+
+This avoids the use of hstack, which inevitiably copies the data to a
+new memory locaiton.
+
+The speed up is small, but measurable.
+
+I can go from 185 fps decoding of a ~3000 x 2000  video to 200 fps
+decoding.
+---
+ av/video/frame.pyx | 13 +++++++------
+ av/video/plane.pxd |  9 +++++++++
+ av/video/plane.pyx | 27 +++++++++++++++++++++++++++
+ 3 files changed, 43 insertions(+), 6 deletions(-)
+
+diff --git a/av/video/frame.pyx b/av/video/frame.pyx
+index e0a73541..8dddfbb7 100644
+--- a/av/video/frame.pyx
++++ b/av/video/frame.pyx
+@@ -6,7 +6,7 @@ from av.enum cimport define_enum
+ from av.error cimport err_check
+ from av.utils cimport check_ndarray, check_ndarray_shape
+ from av.video.format cimport VideoFormat, get_pix_fmt, get_video_format
+-from av.video.plane cimport VideoPlane
++from av.video.plane cimport VideoPlane, YUVPlanes
+ 
+ 
+ cdef object _cinit_bypass_sentinel
+@@ -265,11 +265,12 @@ cdef class VideoFrame(Frame):
+         if frame.format.name in ('yuv420p', 'yuvj420p'):
+             assert frame.width % 2 == 0
+             assert frame.height % 2 == 0
+-            return np.hstack((
+-                useful_array(frame.planes[0]),
+-                useful_array(frame.planes[1]),
+-                useful_array(frame.planes[2])
+-            )).reshape(-1, frame.width)
++            all_planes = YUVPlanes(frame)
++
++            return np.frombuffer(
++                all_planes,
++                dtype=np.uint8,
++            ).reshape(-1, frame.width)
+         elif frame.format.name == 'yuyv422':
+             assert frame.width % 2 == 0
+             assert frame.height % 2 == 0
+diff --git a/av/video/plane.pxd b/av/video/plane.pxd
+index f9abf22b..e78649fc 100644
+--- a/av/video/plane.pxd
++++ b/av/video/plane.pxd
+@@ -1,8 +1,17 @@
+ from av.plane cimport Plane
+ from av.video.format cimport VideoFormatComponent
++from av.buffer cimport Buffer
++from av.frame cimport Frame
+ 
+ 
+ cdef class VideoPlane(Plane):
+ 
+     cdef readonly size_t buffer_size
+     cdef readonly unsigned int width, height
++
++
++cdef class YUVPlanes(Buffer):
++    cdef Frame frame
++
++    cdef readonly size_t buffer_size
++    cdef readonly unsigned int width, height
+diff --git a/av/video/plane.pyx b/av/video/plane.pyx
+index 6f1286ca..4a838088 100644
+--- a/av/video/plane.pyx
++++ b/av/video/plane.pyx
+@@ -1,4 +1,5 @@
+ from av.video.frame cimport VideoFrame
++from av.plane cimport Buffer
+ 
+ 
+ cdef class VideoPlane(Plane):
+@@ -37,3 +38,29 @@ cdef class VideoPlane(Plane):
+         """
+         def __get__(self):
+             return self.frame.ptr.linesize[self.index]
++
++
++cdef class YUVPlanes(Buffer):
++    def __cinit__(self, VideoFrame frame):
++        if frame.format.name not in ['yuvj420p', 'yuv420p']:
++            raise RuntimeError("YUVPlane only supports yuv420p and yuvj420p")
++        if frame.ptr.linesize[0] < 0:
++            raise RuntimeError("YUVPlane only supports positive linesize")
++        self.width = frame.width
++        self.height = frame.height
++        self.buffer_size = self.height * 3 // 2 * self.width
++        self.frame = frame
++
++    cdef size_t _buffer_size(self):
++        return self.buffer_size
++
++    cdef void* _buffer_ptr(self):
++        return self.frame.ptr.data
++
++    def __repr__(self):
++        return '<av.%s %d bytes; buffer_ptr=0x%x; at 0x%x>' % (
++            self.__class__.__name__,
++            self.buffer_size,
++            self.buffer_ptr,
++            id(self),
++        )

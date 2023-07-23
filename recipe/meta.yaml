@@ -3,7 +3,7 @@
 package:
   name: av
   # Set post version to indicate our modifications on conda-forge
-  version: {{ version }}.post4
+  version: {{ version }}.post5
 
 source:
   url: https://pypi.io/packages/source/a/av/av-{{ version }}.tar.gz
@@ -35,14 +35,14 @@ requirements:
   build:
     - python                                 # [build_platform != target_platform]
     - cross-python_{{ target_platform }}     # [build_platform != target_platform]
-    - cython                                 # [build_platform != target_platform]
+    - cython 0.*                             # [build_platform != target_platform]
     - numpy                                  # [build_platform != target_platform]
     - {{ compiler('c') }}
     - pkg-config  # [not win]
   host:
     - python
     - pip
-    - cython
+    - cython 0.*
     - numpy
     - ffmpeg  {{ ffmpeg }}=lgpl*
     - pillow
