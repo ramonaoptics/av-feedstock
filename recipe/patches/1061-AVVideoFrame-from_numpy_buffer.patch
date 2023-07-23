@@ -280,7 +280,7 @@ index 3d354f0d..c0193137 100644
      def test_reformat_pts(self):
          frame = VideoFrame(640, 480, "rgb24")
 
-From 96451b7f5515de06a4b08b58f704c4ff043dfcdd Mon Sep 17 00:00:00 2001
+From a78a054867a82c9e2dd01a3587d586407e725534 Mon Sep 17 00:00:00 2001
 From: Mark Harfouche <mark.harfouche@gmail.com>
 Date: Sun, 23 Jul 2023 10:48:09 -0400
 Subject: [PATCH 3/3] Create a dedicate code path to convert YUV frames to
@@ -294,13 +294,13 @@ The speed up is small, but measurable.
 I can go from 185 fps decoding of a ~3000 x 2000  video to 200 fps
 decoding.
 ---
- av/video/frame.pyx | 13 +++++++------
- av/video/plane.pxd |  9 +++++++++
- av/video/plane.pyx | 27 +++++++++++++++++++++++++++
- 3 files changed, 43 insertions(+), 6 deletions(-)
+ av/video/frame.pyx | 22 ++++++++++++++++------
+ av/video/plane.pxd |  4 ++++
+ av/video/plane.pyx | 17 +++++++++++++++++
+ 3 files changed, 37 insertions(+), 6 deletions(-)
 
 diff --git a/av/video/frame.pyx b/av/video/frame.pyx
-index e0a73541..8dddfbb7 100644
+index e0a73541..e45c5426 100644
 --- a/av/video/frame.pyx
 +++ b/av/video/frame.pyx
 @@ -6,7 +6,7 @@ from av.enum cimport define_enum
@@ -312,7 +312,7 @@ index e0a73541..8dddfbb7 100644
  
  
  cdef object _cinit_bypass_sentinel
-@@ -265,11 +265,12 @@ cdef class VideoFrame(Frame):
+@@ -265,11 +265,21 @@ cdef class VideoFrame(Frame):
          if frame.format.name in ('yuv420p', 'yuvj420p'):
              assert frame.width % 2 == 0
              assert frame.height % 2 == 0
@@ -321,74 +321,58 @@ index e0a73541..8dddfbb7 100644
 -                useful_array(frame.planes[1]),
 -                useful_array(frame.planes[2])
 -            )).reshape(-1, frame.width)
-+            all_planes = YUVPlanes(frame)
-+
-+            return np.frombuffer(
-+                all_planes,
-+                dtype=np.uint8,
-+            ).reshape(-1, frame.width)
++            # Fast path for the case that the entire YUV data is contiguous
++            if (
++                frame.planes[0].line_size == frame.planes[0].width and
++                frame.planes[1].line_size == frame.planes[1].width and
++                frame.planes[2].line_size == frame.planes[2].width
++            ):
++                yuv_planes = YUVPlanes(frame, 0)
++                return useful_array(yuv_planes).reshape(frame.height * 3 // 2, frame.width)
++            else:
++                # Otherwise, we need to copy the data through the use of np.hstack
++                return np.hstack((
++                    useful_array(frame.planes[0]),
++                    useful_array(frame.planes[1]),
++                    useful_array(frame.planes[2])
++                )).reshape(-1, frame.width)
          elif frame.format.name == 'yuyv422':
              assert frame.width % 2 == 0
              assert frame.height % 2 == 0
 diff --git a/av/video/plane.pxd b/av/video/plane.pxd
-index f9abf22b..e78649fc 100644
+index f9abf22b..a74eea20 100644
 --- a/av/video/plane.pxd
 +++ b/av/video/plane.pxd
-@@ -1,8 +1,17 @@
- from av.plane cimport Plane
- from av.video.format cimport VideoFormatComponent
-+from av.buffer cimport Buffer
-+from av.frame cimport Frame
- 
- 
- cdef class VideoPlane(Plane):
+@@ -6,3 +6,7 @@ cdef class VideoPlane(Plane):
  
      cdef readonly size_t buffer_size
      cdef readonly unsigned int width, height
 +
 +
-+cdef class YUVPlanes(Buffer):
-+    cdef Frame frame
-+
-+    cdef readonly size_t buffer_size
-+    cdef readonly unsigned int width, height
++cdef class YUVPlanes(VideoPlane):
++    pass
 diff --git a/av/video/plane.pyx b/av/video/plane.pyx
-index 6f1286ca..4a838088 100644
+index 6f1286ca..3d0a523b 100644
 --- a/av/video/plane.pyx
 +++ b/av/video/plane.pyx
-@@ -1,4 +1,5 @@
- from av.video.frame cimport VideoFrame
-+from av.plane cimport Buffer
- 
- 
- cdef class VideoPlane(Plane):
-@@ -37,3 +38,29 @@ cdef class VideoPlane(Plane):
+@@ -37,3 +37,20 @@ cdef class VideoPlane(Plane):
          """
          def __get__(self):
              return self.frame.ptr.linesize[self.index]
 +
 +
-+cdef class YUVPlanes(Buffer):
-+    def __cinit__(self, VideoFrame frame):
++cdef class YUVPlanes(VideoPlane):
++    def __cinit__(self, VideoFrame frame, int index):
++        if index != 0:
++            raise RuntimeError("YUVPlanes only supports index 0")
 +        if frame.format.name not in ['yuvj420p', 'yuv420p']:
 +            raise RuntimeError("YUVPlane only supports yuv420p and yuvj420p")
 +        if frame.ptr.linesize[0] < 0:
 +            raise RuntimeError("YUVPlane only supports positive linesize")
 +        self.width = frame.width
-+        self.height = frame.height
-+        self.buffer_size = self.height * 3 // 2 * self.width
++        self.height = frame.height * 3 // 2
++        self.buffer_size = self.height *  abs(self.frame.ptr.linesize[0])
 +        self.frame = frame
 +
-+    cdef size_t _buffer_size(self):
-+        return self.buffer_size
-+
 +    cdef void* _buffer_ptr(self):
-+        return self.frame.ptr.data
-+
-+    def __repr__(self):
-+        return '<av.%s %d bytes; buffer_ptr=0x%x; at 0x%x>' % (
-+            self.__class__.__name__,
-+            self.buffer_size,
-+            self.buffer_ptr,
-+            id(self),
-+        )
++        return self.frame.ptr.extended_data[self.index]
