@@ -1,0 +1,384 @@
+From 11e5add3135f35931e7b1046865a2e4402ba6e2b Mon Sep 17 00:00:00 2001
+From: Mark Harfouche <mark.harfouche@gmail.com>
+Date: Sat, 24 Dec 2022 14:07:27 -0500
+Subject: [PATCH 1/3] Micro optimization. Check for None instead of truthyness
+
+---
+ av/codec/context.pyx | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/av/codec/context.pyx b/av/codec/context.pyx
+index bc8b35d57..39c81afd0 100644
+--- a/av/codec/context.pyx
++++ b/av/codec/context.pyx
+@@ -400,7 +400,7 @@ cdef class CodecContext:
+         out = []
+         while True:
+             packet = self._recv_packet()
+-            if packet:
++            if packet is not None:
+                 out.append(packet)
+             else:
+                 break
+
+From 62fc642faf0b233af7bf184d825f8c8f38c39193 Mon Sep 17 00:00:00 2001
+From: Mark Harfouche <mark.harfouche@gmail.com>
+Date: Sat, 24 Dec 2022 17:17:41 -0500
+Subject: [PATCH 2/3] Provide a path to sharing memory with a numpy buffer
+
+---
+ av/video/frame.pxd           |  1 +
+ av/video/frame.pyx           | 83 +++++++++++++++++++++++++++++-
+ include/libavutil/avutil.pxd | 12 +++++
+ tests/test_videoframe.py     | 98 ++++++++++++++++++++++++++++++++++++
+ 4 files changed, 193 insertions(+), 1 deletion(-)
+
+diff --git a/av/video/frame.pxd b/av/video/frame.pxd
+index 709775e55..9e97d946f 100644
+--- a/av/video/frame.pxd
++++ b/av/video/frame.pxd
+@@ -11,6 +11,7 @@ cdef class VideoFrame(Frame):
+     # This is the buffer that is used to back everything in the AVFrame.
+     # We don't ever actually access it directly.
+     cdef uint8_t *_buffer
++    cdef object _np_buffer
+ 
+     cdef VideoReformatter reformatter
+ 
+diff --git a/av/video/frame.pyx b/av/video/frame.pyx
+index 971b88ccc..84a74a018 100644
+--- a/av/video/frame.pyx
++++ b/av/video/frame.pyx
+@@ -118,6 +118,8 @@ cdef class VideoFrame(Frame):
+         # The `self._buffer` member is only set if *we* allocated the buffer in `_init`,
+         # as opposed to a buffer allocated by a decoder.
+         lib.av_freep(&self._buffer)
++        # Let go of the reference from the numpy buffers if we made one
++        self._np_buffer = None
+ 
+     def __repr__(self):
+         return '<av.%s #%d, pts=%s %s %dx%d at 0x%x>' % (
+@@ -150,7 +152,6 @@ cdef class VideoFrame(Frame):
+         cdef int plane_count = 0
+         while plane_count < max_plane_count and self.ptr.extended_data[plane_count]:
+             plane_count += 1
+-
+         return tuple([VideoPlane(self, i) for i in range(plane_count)])
+ 
+     property width:
+@@ -343,6 +344,86 @@ cdef class VideoFrame(Frame):
+ 
+         return frame
+ 
++    @staticmethod
++    def from_numpy_buffer(array, format='rgb24'):
++        if format in ["rgb24", "bgr24"]:
++            check_ndarray(array, 'uint8', 3)
++            check_ndarray_shape(array, array.shape[2] == 3)
++            height, width = array.shape[:2]
++        elif format in ('gray', 'gray8', 'rgb8', 'bgr8'):
++            check_ndarray(array, 'uint8', 2)
++            height, width = array.shape[:2]
++        elif format in ["yuv420p", "yuvj420p", "nv12"]:
++            check_ndarray(array, 'uint8', 2)
++            check_ndarray_shape(array, array.shape[0] % 3 == 0)
++            check_ndarray_shape(array, array.shape[1] % 2 == 0)
++            height, width = array.shape[:2]
++            height = height // 6 * 4
++        else:
++            raise ValueError('Conversion from numpy array with format `%s` is not yet supported' % format)
++
++        if not array.flags['C_CONTIGUOUS']:
++            raise ValueError("provided array must be C_CONTIGUOUS")
++
++        frame = alloc_video_frame()
++        frame._image_fill_pointers_numpy(array, width, height, format)
++        return frame
++
++    def _image_fill_pointers_numpy(self, buffer, width, height, format):
++        cdef lib.AVPixelFormat c_format
++        cdef uint8_t * c_ptr
++        cdef size_t c_data
++
++        # If you want to use the numpy notation
++        # then you need to include the following two lines at the top of the file
++        #      cimport numpy as cnp
++        #      cnp.import_array()
++        # And add the numpy include directories to the setup.py files
++        # hint np.get_include()
++        # cdef cnp.ndarray[
++        #     dtype=cnp.uint8_t, ndim=1,
++        #     negative_indices=False, mode='c'] c_buffer
++        # c_buffer = buffer.reshape(-1)
++        # c_ptr = &c_buffer[0]
++        # c_ptr = <uint8_t*> (<void*>(buffer.ctypes.data))
++
++        # Using buffer.ctypes.data helps avoid any kind of
++        # usage of the c-api from numpy, which avoid the need to add numpy
++        # as a compile time dependency
++        # Without this double cast, you get an error that looks like
++        #     c_ptr = <uint8_t*> (buffer.ctypes.data)
++        # TypeError: expected bytes, int found
++        c_data = buffer.ctypes.data
++        c_ptr = <uint8_t*> (c_data)
++        c_format = get_pix_fmt(format)
++        lib.av_freep(&self._buffer)
++
++        # Hold on to a reference for the numpy buffer
++        # so that it doesn't get accidentally garbage collected
++        self._np_buffer = buffer
++        self.ptr.format = c_format
++        self.ptr.width = width
++        self.ptr.height = height
++        res = lib.av_image_fill_linesizes(
++            self.ptr.linesize,
++            <lib.AVPixelFormat>self.ptr.format,
++            width,
++        )
++        if res:
++          err_check(res)
++
++        res = lib.av_image_fill_pointers(
++            self.ptr.data,
++            <lib.AVPixelFormat>self.ptr.format,
++            self.ptr.height,
++            c_ptr,
++            self.ptr.linesize,
++        )
++
++        if res:
++            err_check(res)
++        self._init_user_attributes()
++
+     @staticmethod
+     def from_ndarray(array, format='rgb24'):
+         """
+diff --git a/include/libavutil/avutil.pxd b/include/libavutil/avutil.pxd
+index 50e6bfffd..277f1e437 100644
+--- a/include/libavutil/avutil.pxd
++++ b/include/libavutil/avutil.pxd
+@@ -278,6 +278,18 @@ cdef extern from "libavutil/imgutils.h" nogil:
+         AVPixelFormat pix_fmt,
+         int align
+     )
++    cdef int av_image_fill_pointers(
++        uint8_t *pointers[4],
++        AVPixelFormat pix_fmt,
++        int height,
++        uint8_t *ptr,
++        const int linesizes[4]
++    )
++    cdef int av_image_fill_linesizes(
++        int linesizes[4],
++        AVPixelFormat pix_fmt,
++        int width,
++    )
+ 
+ 
+ cdef extern from "libavutil/log.h" nogil:
+diff --git a/tests/test_videoframe.py b/tests/test_videoframe.py
+index 0d36616e1..32f6c6cd3 100644
+--- a/tests/test_videoframe.py
++++ b/tests/test_videoframe.py
+@@ -491,6 +491,104 @@ def test_ndarray_nv12_align(self):
+         self.assertNdarraysEqual(frame.to_ndarray(), array)
+ 
+ 
++class TestVideoFrameNumpyBuffer(TestCase):
++    def test_shares_memory_gray(self):
++        array = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "gray")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_gray8(self):
++        array = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "gray8")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_rgb8(self):
++        array = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "rgb8")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_bgr8(self):
++        array = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "bgr8")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=(357, 318), dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_rgb24(self):
++        array = numpy.random.randint(0, 256, size=(357, 318, 3), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "rgb24")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=(357, 318, 3), dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_yuv420p(self):
++        array = numpy.random.randint(
++            0, 256, size=(512 * 6 // 4, 256), dtype=numpy.uint8
++        )
++        frame = VideoFrame.from_numpy_buffer(array, "yuv420p")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=array.shape, dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_yuvj420p(self):
++        array = numpy.random.randint(
++            0, 256, size=(512 * 6 // 4, 256), dtype=numpy.uint8
++        )
++        frame = VideoFrame.from_numpy_buffer(array, "yuvj420p")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=array.shape, dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_nv12(self):
++        array = numpy.random.randint(
++            0, 256, size=(512 * 6 // 4, 256), dtype=numpy.uint8
++        )
++        frame = VideoFrame.from_numpy_buffer(array, "nv12")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=array.shape, dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++    def test_shares_memory_bgr24(self):
++        array = numpy.random.randint(0, 256, size=(357, 318, 3), dtype=numpy.uint8)
++        frame = VideoFrame.from_numpy_buffer(array, "bgr24")
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++        # overwrite the array, the contents thereof
++        array[...] = numpy.random.randint(0, 256, size=(357, 318, 3), dtype=numpy.uint8)
++        # Make sure the frame reflects that
++        self.assertNdarraysEqual(frame.to_ndarray(), array)
++
++
+ class TestVideoFrameTiming(TestCase):
+     def test_reformat_pts(self):
+         frame = VideoFrame(640, 480, "rgb24")
+
+From 172d8a80461e244366c4e8f3996d1a681e2f1279 Mon Sep 17 00:00:00 2001
+From: Mark Harfouche <mark.harfouche@gmail.com>
+Date: Sun, 23 Jul 2023 10:48:09 -0400
+Subject: [PATCH 3/3] Create a dedicate code path to convert YUV frames to
+ numpy for speed
+
+This avoids the use of hstack, which inevitiably copies the data to a
+new memory locaiton.
+
+The speed up is small, but measurable.
+
+I can go from 185 fps decoding of a ~3000 x 2000  video to 200 fps
+decoding.
+---
+ av/video/frame.pyx | 22 ++++++++++++++++------
+ av/video/plane.pxd |  4 ++++
+ av/video/plane.pyx | 17 +++++++++++++++++
+ 3 files changed, 37 insertions(+), 6 deletions(-)
+
+diff --git a/av/video/frame.pyx b/av/video/frame.pyx
+index 84a74a018..b294531b4 100644
+--- a/av/video/frame.pyx
++++ b/av/video/frame.pyx
+@@ -6,7 +6,7 @@ from av.enum cimport define_enum
+ from av.error cimport err_check
+ from av.utils cimport check_ndarray, check_ndarray_shape
+ from av.video.format cimport get_pix_fmt, get_video_format
+-from av.video.plane cimport VideoPlane
++from av.video.plane cimport VideoPlane, YUVPlanes
+ 
+ 
+ cdef object _cinit_bypass_sentinel
+@@ -265,11 +265,21 @@ cdef class VideoFrame(Frame):
+         if frame.format.name in ('yuv420p', 'yuvj420p'):
+             assert frame.width % 2 == 0
+             assert frame.height % 2 == 0
+-            return np.hstack((
+-                useful_array(frame.planes[0]),
+-                useful_array(frame.planes[1]),
+-                useful_array(frame.planes[2])
+-            )).reshape(-1, frame.width)
++            # Fast path for the case that the entire YUV data is contiguous
++            if (
++                frame.planes[0].line_size == frame.planes[0].width and
++                frame.planes[1].line_size == frame.planes[1].width and
++                frame.planes[2].line_size == frame.planes[2].width
++            ):
++                yuv_planes = YUVPlanes(frame, 0)
++                return useful_array(yuv_planes).reshape(frame.height * 3 // 2, frame.width)
++            else:
++                # Otherwise, we need to copy the data through the use of np.hstack
++                return np.hstack((
++                    useful_array(frame.planes[0]),
++                    useful_array(frame.planes[1]),
++                    useful_array(frame.planes[2])
++                )).reshape(-1, frame.width)
+         elif frame.format.name in ('yuv444p', 'yuvj444p'):
+             return np.hstack((
+                 useful_array(frame.planes[0]),
+diff --git a/av/video/plane.pxd b/av/video/plane.pxd
+index f9abf22b6..a74eea206 100644
+--- a/av/video/plane.pxd
++++ b/av/video/plane.pxd
+@@ -6,3 +6,7 @@ cdef class VideoPlane(Plane):
+ 
+     cdef readonly size_t buffer_size
+     cdef readonly unsigned int width, height
++
++
++cdef class YUVPlanes(VideoPlane):
++    pass
+diff --git a/av/video/plane.pyx b/av/video/plane.pyx
+index 6f1286ca3..3d0a523b0 100644
+--- a/av/video/plane.pyx
++++ b/av/video/plane.pyx
+@@ -37,3 +37,20 @@ cdef class VideoPlane(Plane):
+         """
+         def __get__(self):
+             return self.frame.ptr.linesize[self.index]
++
++
++cdef class YUVPlanes(VideoPlane):
++    def __cinit__(self, VideoFrame frame, int index):
++        if index != 0:
++            raise RuntimeError("YUVPlanes only supports index 0")
++        if frame.format.name not in ['yuvj420p', 'yuv420p']:
++            raise RuntimeError("YUVPlane only supports yuv420p and yuvj420p")
++        if frame.ptr.linesize[0] < 0:
++            raise RuntimeError("YUVPlane only supports positive linesize")
++        self.width = frame.width
++        self.height = frame.height * 3 // 2
++        self.buffer_size = self.height *  abs(self.frame.ptr.linesize[0])
++        self.frame = frame
++
++    cdef void* _buffer_ptr(self):
++        return self.frame.ptr.extended_data[self.index]
