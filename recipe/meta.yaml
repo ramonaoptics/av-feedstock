@@ -15,6 +15,11 @@ source:
 
 build:
   number: 0
+  skip: true  # [not linux64]
+  skip: true  # [py==38]
+  skip: true  # [py==39]
+  skip: true  # [py==39]
+  skip: true  # [py==311]
   script:
     - {{ PYTHON }} -m pip install . --no-deps --ignore-installed --no-cache-dir -vvv
     # 2022/02/06: hmaarrfk
