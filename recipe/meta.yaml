@@ -2,7 +2,7 @@
 
 package:
   name: av
-  version: {{ version }}.post1
+  version: {{ version }}.post2
 
 source:
   url: https://pypi.io/packages/source/a/av/av-{{ version }}.tar.gz
