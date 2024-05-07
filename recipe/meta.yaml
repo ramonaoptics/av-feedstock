@@ -9,15 +9,12 @@ source:
   sha256: bcf21ebb722d4538b4099e5a78f730d78814dd70003511c185941dba5651b14d
   patches:
     - patches/lgpl_tests.patch
-    # https://github.com/PyAV-Org/PyAV/pull/1393
-    - patches/1393.patch
     - patches/version.patch
 
 build:
   number: 0
   skip: true  # [not linux64]
   skip: true  # [py==38]
-  skip: true  # [py==39]
   skip: true  # [py==39]
   skip: true  # [py==311]
   script:
